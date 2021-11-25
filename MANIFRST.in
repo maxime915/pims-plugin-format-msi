@@ -1,0 +1,2 @@
+inclue README.md LICENSE
+global-exclude *.pyc
