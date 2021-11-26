@@ -2,8 +2,6 @@
 
 VERSION = (0, 0, 1)
 
-VERSION = (0, 1, 0)
-
 # TODO fill-in
 __title__ = 'pims-plugin-format-msi'
 __description__ = 'ZarrImzML plugin for Mass Spectrometry Imaging'
