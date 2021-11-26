@@ -11,15 +11,16 @@ REQUIRES_PYTHON = '>=3.8.0'
 
 # What packages are required for this module to be executed?
 REQUIRED = [
-		'pims',
-		]
+    'pims',
+    'zarr',
+]
 
 DEPENDENCY_LINKS = []
 
 # What packages are optional?
 EXTRAS = {
-		'tests': ['pytest>=6.2.2'],
-		}
+    'tests': ['pytest>=6.2.2'],
+}
 
 # Load the package's __version__.py module as a directory
 about = {}
@@ -47,7 +48,8 @@ setup(
     author_email=about['__email__'],
     python_requires=REQUIRES_PYTHON,
     url=about['__url__'],
-    packages=find_packages(exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
+    packages=find_packages(
+        exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
     entry_points={
         'pims.formats': f'{about["__plugin__"]} = {project_slug}',
     },
@@ -57,4 +59,3 @@ setup(
     include_package_data=True,
     license=about['__license__'],
 )
-
