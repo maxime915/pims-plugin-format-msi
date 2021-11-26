@@ -1,2 +1,2 @@
-# pims-plugin-format-zarrimzml
-PIMS plugin to read ImzML images converted to Zarr
+# pims-plugin-format-msi
+PIMS plugin to read and convert Mass Spectrometry Imaging to OME-Zarr supported by Cytomine

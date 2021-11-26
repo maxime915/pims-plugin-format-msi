@@ -6,7 +6,7 @@ import os
 from setuptools import setup, find_packages
 
 # Package meta-data
-NAME = 'pims-plugin-format-zarrimzml'
+NAME = 'pims-plugin-format-mis'
 REQUIRES_PYTHON = '>=3.8.0'
 
 # What packages are required for this module to be executed?

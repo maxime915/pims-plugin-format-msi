@@ -1,5 +1,5 @@
-"""zarrimzml: PIMS format definition for ImzML mass spectrometry images
-converted to Zarr
+"""imzml: PIMS format definition for ImzML mass spectrometry images
+implementing required utilities (checker, parser) and conversion.
 """
 
 from pims.formats import AbstractFormat
@@ -7,9 +7,9 @@ from pims.formats import AbstractFormat
 #from pims.formats.utils.checker import AbstractChecker
 #from pims.formats.utils.histogram import DefaultHistogramReader
 
-class ZarrImzMLFormat(AbstractFormat):
+class ImzMLFormat(AbstractFormat):
     """
-    ZarrImzMLFormat: PIMS format class
+    ImzMLFormat: PIMS format class
     """
 
     checker_class = None # TODO
@@ -27,7 +27,7 @@ class ZarrImzMLFormat(AbstractFormat):
     @classmethod
     def get_name(cls) -> str:
         "get_name returns the name of the file format"
-        return "ZarrImzML"
+        return "ImzML"
 
     @classmethod
     def get_remarks(cls) -> str:
