@@ -6,13 +6,16 @@ import os
 from setuptools import setup, find_packages
 
 # Package meta-data
-NAME = 'pims-plugin-format-mis'
+NAME = 'pims-plugin-format-msi'
 REQUIRES_PYTHON = '>=3.8.0'
 
 # What packages are required for this module to be executed?
 REQUIRED = [
     'pims',
     'zarr',
+    'lxml',
+    'pyimzml',
+    'numpy',
 ]
 
 DEPENDENCY_LINKS = []
