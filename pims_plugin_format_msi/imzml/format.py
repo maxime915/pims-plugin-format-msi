@@ -7,13 +7,14 @@ from functools import cached_property
 from pims.formats import AbstractFormat
 
 from pims_plugin_format_msi.imzml.checker import ImzMLChecker
+from pims_plugin_format_msi.imzml.convertor import ImzMLToZarrConvertor
 from pims_plugin_format_msi.imzml.parser import ImzMLParser
 
 
 class NotImplementedClass:
     """class that does nothing when constructed and raises a NotImplementedError
     when accessed in any way"""
-    # TODO remove when sufficient progress has been made
+    # remove when sufficient progress has been made
     __slots__ = ()
 
     def __init__(self, *args, **kwargs) -> None:
@@ -32,7 +33,7 @@ class ImzMLFormat(AbstractFormat):
     checker_class = ImzMLChecker
     parser_class = ImzMLParser
     reader_class = NotImplementedClass  # TODO ?
-    convertor_class = NotImplementedClass  # TODO
+    convertor_class = ImzMLToZarrConvertor
 
     histogram_reader_class = NotImplementedClass  # TODO ?
 
@@ -50,13 +51,13 @@ class ImzMLFormat(AbstractFormat):
 
     @classmethod
     def is_spatial(cls) -> str:
-        "TODO: what is this used for ?"
-
-        return False  # TODO is this right ?
+        # ImzML should be used for conversion only
+        return False
 
     @classmethod
     def is_spectral(cls) -> str:
-        return True
+        # ImzML should be used for conversion only
+        return False
 
     @classmethod
     def get_remarks(cls) -> str:
