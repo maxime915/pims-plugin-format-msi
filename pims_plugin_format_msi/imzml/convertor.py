@@ -30,13 +30,16 @@ def _convert(parser: pyimzml.ImzMLParser.ImzMLParser,
 
     Args:
         parser (pyimzml.ImzMLParser.ImzMLParser): initialized parser for the image
-        intensities (zarr.Array): empty array of the right shape
-        mzs (zarr.Array): empty array of the right shape
+        intensities (zarr.Array): array of the right shape
+        mzs (zarr.Array): array of the right shape
+
+    NOTE: missing coordinates will not write to the array, make sure the default
+    value for the array is suitable
     """
 
     with single_temp_store() as fast_store:
         # create an array for the temporary intensities
-        fast_intensities = zarr.group(fast_store).empty(
+        fast_intensities = zarr.group(fast_store).zeros(
             '0',
             shape=intensities.shape,
             dtype=intensities.dtype,
@@ -131,7 +134,7 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
     ]
 
     # array for the intensity values (main image)
-    intensities = root.empty(
+    intensities = root.zeros(
         '0',
         shape=shape,
         dtype=parser.intensityPrecision,
@@ -142,7 +145,7 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
     intensities.attrs['_ARRAY_DIMENSIONS'] = root.attrs['multiscales'][0]['axes']
 
     # array for the m/Z (as a label)
-    mzs = root.empty(
+    mzs = root.zeros(
         'labels/mzs/0',
         shape=(shape[0], 1, 1, 1),
         dtype=parser.mzPrecision,
