@@ -25,6 +25,25 @@ class PIMSOpenMicroscopyEnvironmentZarr(AbstractFormat):
     "placeholder while PIMS lack the internal Zarr format"
 
 
+@contextlib.contextmanager
+def load_parser(imzml: Path, ibd: Path):
+    """load a parser object from pyimzml
+
+    Args:
+        imzml (Path): path to the ImzML file
+        ibd (Path): path to the ibd file
+
+    Yields:
+        Iterator[pyimzml.ImzMLParser.ImzMLParser]
+    """
+    with open(str(ibd), mode='rb') as ibd_file:
+        yield pyimzml.ImzMLParser.ImzMLParser(
+            filename=str(imzml),
+            parse_lib='lxml',
+            ibd_file=ibd_file  # the ibd file has to be opened manually
+        )
+
+
 def _convert(parser: pyimzml.ImzMLParser.ImzMLParser,
              intensities: zarr.Array,
              mzs: zarr.Array) -> None:
@@ -52,7 +71,7 @@ def _convert(parser: pyimzml.ImzMLParser.ImzMLParser,
         # fill m/Z into the destination group
         parser.m.seek(parser.mzOffsets[0])
         mzs[:, 0, 0, 0] = np.fromfile(parser.m, count=parser.mzLengths[0],
-                             dtype=parser.mzPrecision)
+                                      dtype=parser.mzPrecision)
 
         # fill intensities into the fast group
         for idx, (x, y, _) in enumerate(parser.coordinates):
@@ -91,87 +110,81 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
     if pair is None:
         raise ValueError('not an imzML file')
 
-    imzml, ibd = pair
+    with load_parser(*pair) as parser:
 
-    parser = pyimzml.ImzMLParser.ImzMLParser(
-        filename=str(imzml),
-        parse_lib='lxml',
-        ibd_file=open(str(ibd), mode='rb')
-    )
+        shape = (parser.mzLengths[0],                        # c = m/Z
+                 1,                                          # z = 1
+                 parser.imzmldict['max count of pixels y'],  # y
+                 parser.imzmldict['max count of pixels x'])  # x
 
-    shape = (parser.mzLengths[0],                        # c = m/Z
-             1,                                          # z = 1
-             parser.imzmldict['max count of pixels y'],  # y
-             parser.imzmldict['max count of pixels x'])  # x
+        # create OME-Zarr structure
+        root = zarr.group(store=destination)
 
-    # create OME-Zarr structure
-    root = zarr.group(store=destination)
+        # multiscales metadata
+        root.attrs['multiscales'] = [{
+            'version': '0.3',
+            'name': pathlib.Path(destination.path).stem,
+            # store intensities in dataset 0
+            'datasets': [{'path': '0'}, ],
+            # NOTE axes attribute may change significantly in 0.4.0
+            'axes': ['c', 'z', 'y', 'x'],
+            'type': 'none',  # no downscaling (at the moment)
+            # NOTE there are probably other metadata useful, to investigate
+            'metadata': {
+                    'original': str(source.path),
+                    'uuid': parser.metadata.file_description.cv_params[0][2],
+            },
+        }]
 
-    # multiscales metadata
-    root.attrs['multiscales'] = [{
-        'version': '0.3',
-        'name': pathlib.Path(destination.path).stem,
-        # store intensities in dataset 0
-        'datasets': [{'path': '0'}, ],
-        # NOTE axes attribute may change significantly in 0.4.0
-        'axes': ['c', 'z', 'y', 'x'],
-        'type': 'none',  # no downscaling (at the moment)
-        # NOTE there are probably other metadata useful, to investigate
-        'metadata': {
-                'original': str(source.path),
-                'uuid': parser.metadata.file_description.cv_params[0][2],
-        },
-    }]
+        # Omero attributes (are they useful ?)
+        # root.attrs['omero'] = {
+        #     'channels': [],
+        #     'rdefs': {'model': ''}
+        # }
 
-    # Omero attributes (are they useful ?)
-    # root.attrs['omero'] = {
-    #     'channels': [],
-    #     'rdefs': {'model': ''}
-    # }
+        root.attrs['pims-msi'] = {
+            'version': VERSION,
+            'source': str(source),
+            # image resolution ?
+            'uuid': parser.metadata.file_description.cv_params[0][2],
+            # find out if imzML come from a conversion, include it if so ?
+        }
 
-    root.attrs['pims-msi'] = {
-        'version': VERSION,
-        'source': str(source),
-        # image resolution ?
-        'uuid': parser.metadata.file_description.cv_params[0][2],
-        # find out if imzML come from a conversion, include it if so ?
-    }
+        # label group
+        root.create_group('labels').attrs['labels'] = [
+            'mzs/0',  # path to the m/Z values for this image
+        ]
 
-    # label group
-    root.create_group('labels').attrs['labels'] = [
-        'mzs/0',  # path to the m/Z values for this image
-    ]
+        # array for the intensity values (main image)
+        intensities = root.zeros(
+            '0',
+            shape=shape,
+            dtype=parser.intensityPrecision,
+            # default chunks & compressor (NOTE: subject to change)
+        )
 
-    # array for the intensity values (main image)
-    intensities = root.zeros(
-        '0',
-        shape=shape,
-        dtype=parser.intensityPrecision,
-        # default chunks & compressor (NOTE: subject to change)
-    )
+        # xarray zarr enconding
+        intensities.attrs['_ARRAY_DIMENSIONS'] = root.attrs['multiscales'][0]['axes']
 
-    # xarray zarr enconding
-    intensities.attrs['_ARRAY_DIMENSIONS'] = root.attrs['multiscales'][0]['axes']
+        # array for the m/Z (as a label)
+        mzs = root.zeros(
+            'labels/mzs/0',
+            shape=(shape[0], 1, 1, 1),
+            dtype=parser.mzPrecision,
+            # default chunks
+            compressor=None,
+        )
 
-    # array for the m/Z (as a label)
-    mzs = root.zeros(
-        'labels/mzs/0',
-        shape=(shape[0], 1, 1, 1),
-        dtype=parser.mzPrecision,
-        # default chunks
-        compressor=None,
-    )
+        # NOTE: for now, z axis is supposed to be a Zero for all values
+        # array for z value (as a label)
+        # z_values = root.zeros(
+        #     'labels/z/0',
+        #     shape=(1, shape[1], 1, 1),
+        #     dtype=float,
+        #     compressor=None,
+        # )
 
-    # NOTE: for now, z axis is supposed to be a Zero for all values
-    # array for z value (as a label)
-    # z_values = root.zeros(
-    #     'labels/z/0',
-    #     shape=(1, shape[1], 1, 1),
-    #     dtype=float,
-    #     compressor=None,
-    # )
-
-    _convert(parser, intensities, mzs)
+        _convert(parser, intensities, mzs)
 
 
 class ImzMLToZarrConvertor(AbstractConvertor):
@@ -187,7 +200,7 @@ class ImzMLToZarrConvertor(AbstractConvertor):
         result
             Whether the conversion succeeded or not
         """
-        
+
         if dest_path.exists():
             return False
 
@@ -203,8 +216,8 @@ class ImzMLToZarrConvertor(AbstractConvertor):
             try:
                 # do conversion in dedicated function
                 convert_to_store(self.source.path, dest_store)
-            except (ValueError, KeyError) as e:
-                raise e  # FIXME remove
+            except (ValueError, KeyError) as exception:
+                print(f'caught {exception=}')
                 return False  # store is automatically removed by callback
 
             # remove callback to avoid file removal & indicate successful conversion
