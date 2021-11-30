@@ -16,6 +16,8 @@ from pims.formats.utils.convertor import AbstractConvertor
 from ..utils.temp_store import single_temp_store
 from .utils import get_imzml_pair
 
+from ..__version__ import VERSION
+
 _DISK_COPY_THRESHOLD = 8 * 10 ** 9
 
 
@@ -119,13 +121,20 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
                 'original': str(source.path),
                 'uuid': parser.metadata.file_description.cv_params[0][2],
         },
-        # TODO image dimension & resolution (?)
     }]
 
-    # Omero attributes
-    root.attrs['omero'] = {
-        'channels': [],  # TODO
-        'rdefs': {'model': ''}  # TODO
+    # Omero attributes (are they useful ?)
+    # root.attrs['omero'] = {
+    #     'channels': [],
+    #     'rdefs': {'model': ''}
+    # }
+
+    root.attrs['pims-msi'] = {
+        'version': VERSION,
+        'source': str(source),
+        # image resolution ?
+        'uuid': parser.metadata.file_description.cv_params[0][2],
+        # find out if imzML come from a conversion, include it if so ?
     }
 
     # label group
@@ -195,7 +204,7 @@ class ImzMLToZarrConvertor(AbstractConvertor):
                 # do conversion in dedicated function
                 convert_to_store(self.source.path, dest_store)
             except (ValueError, KeyError) as e:
-                raise e
+                raise e  # FIXME remove
                 return False  # store is automatically removed by callback
 
             # remove callback to avoid file removal & indicate successful conversion
