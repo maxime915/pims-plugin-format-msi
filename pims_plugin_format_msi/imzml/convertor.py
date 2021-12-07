@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import pathlib
-from typing import MutableMapping, Type
+from typing import List, Type
 
 import numpy as np
 import pyimzml.ImzMLParser
@@ -92,7 +92,46 @@ def _convert(parser: pyimzml.ImzMLParser.ImzMLParser,
             intensities[:] = fast_intensities
 
 
-def convert_to_store(source: Path, destination: MutableMapping) -> None:
+def _add_base_metadata(root: zarr.Group, name: str, source: str, uuid: str) -> None:
+    """add some OME-Zarr compliant metadata to the root group:
+        - multiscales
+        - labels
+
+    as well as custom PIMS - MSI metadata in 'pims-msi'
+    """
+
+    # multiscales metadata
+    root.attrs['multiscales'] = [{
+        'version': '0.3',
+        'name': name,
+        # store intensities in dataset 0
+        'datasets': [{'path': '0'}, ],
+        # NOTE axes attribute may change significantly in 0.4.0
+        'axes': ['c', 'z', 'y', 'x'],
+        'type': 'none',  # no downscaling (at the moment)
+    }]
+
+    root.attrs['pims-msi'] = {
+        'version': VERSION,
+        'source': source,
+        # image resolution ?
+        'uuid': uuid,
+        # find out if imzML come from a conversion, include it if so ?
+    }
+
+    # label group
+    root.create_group('labels').attrs['labels'] = [
+        'mzs/0',  # path to the m/Z values for this image
+        # 'mzs/z',  # path to the depth values for this image
+    ]
+
+
+def _get_xarray_axes(root: zarr.Group) -> List[str]:
+    "return a copy of the 'axes' multiscales metadata, used for XArray"
+    return root.attrs['multiscales'][0]['axes']
+
+
+def convert_to_store(name: str, source_dir: Path, dest_store: zarr.DirectoryStore) -> None:
     """convert an imzML from a folder containing the imzML & ibd files to a \
         Zarr group.
 
@@ -105,7 +144,7 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
         ValueError: if no valid imzML file can be found in the source folder
     """
 
-    pair = get_imzml_pair(source)
+    pair = get_imzml_pair(source_dir)
 
     if pair is None:
         raise ValueError('not an imzML file')
@@ -118,42 +157,21 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
                  parser.imzmldict['max count of pixels x'])  # x
 
         # create OME-Zarr structure
-        root = zarr.group(store=destination)
+        root = zarr.group(store=dest_store)
 
-        # multiscales metadata
-        root.attrs['multiscales'] = [{
-            'version': '0.3',
-            'name': pathlib.Path(destination.path).stem,
-            # store intensities in dataset 0
-            'datasets': [{'path': '0'}, ],
-            # NOTE axes attribute may change significantly in 0.4.0
-            'axes': ['c', 'z', 'y', 'x'],
-            'type': 'none',  # no downscaling (at the moment)
-            # NOTE there are probably other metadata useful, to investigate
-            'metadata': {
-                    'original': str(source.path),
-                    'uuid': parser.metadata.file_description.cv_params[0][2],
-            },
-        }]
+        _add_base_metadata(root, name=name, source=parser.filename,
+                           uuid=parser.metadata.file_description.cv_params[0][2])
 
-        # Omero attributes (are they useful ?)
-        # root.attrs['omero'] = {
-        #     'channels': [],
-        #     'rdefs': {'model': ''}
-        # }
+        # check for binary mode
+        is_continuous = 'continuous' in parser.metadata.file_description.param_by_name
+        is_processed = 'processed' in parser.metadata.file_description.param_by_name
 
-        root.attrs['pims-msi'] = {
-            'version': VERSION,
-            'source': str(source),
-            # image resolution ?
-            'uuid': parser.metadata.file_description.cv_params[0][2],
-            # find out if imzML come from a conversion, include it if so ?
-        }
-
-        # label group
-        root.create_group('labels').attrs['labels'] = [
-            'mzs/0',  # path to the m/Z values for this image
-        ]
+        if is_continuous == is_processed:
+            raise ValueError("invalid file mode, "
+                             "expected one of 'continuous' or 'processed'")
+        
+        if is_processed:
+            raise NotImplementedError("TODO")
 
         # array for the intensity values (main image)
         intensities = root.zeros(
@@ -164,7 +182,7 @@ def convert_to_store(source: Path, destination: MutableMapping) -> None:
         )
 
         # xarray zarr enconding
-        intensities.attrs['_ARRAY_DIMENSIONS'] = root.attrs['multiscales'][0]['axes']
+        intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(root)
 
         # array for the m/Z (as a label)
         mzs = root.zeros(
@@ -205,6 +223,8 @@ class ImzMLToZarrConvertor(AbstractConvertor):
             return False
 
         with contextlib.ExitStack() as stack:
+            name = dest_path.true_stem
+
             # create the directory for the destination
             dest_store = zarr.DirectoryStore(dest_path)
 
@@ -215,9 +235,9 @@ class ImzMLToZarrConvertor(AbstractConvertor):
 
             try:
                 # do conversion in dedicated function
-                convert_to_store(self.source.path, dest_store)
+                convert_to_store(name, self.source.path, dest_store)
             except (ValueError, KeyError) as exception:
-                print(f'caught {exception=}')
+                print(f'caught {exception=}')  # TODO use a proper logger and clean this up
                 return False  # store is automatically removed by callback
 
             # remove callback to avoid file removal & indicate successful conversion
