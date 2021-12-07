@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-import pathlib
-from typing import List, Type
+from typing import List, Tuple, Type
 
 import numpy as np
 import pyimzml.ImzMLParser
@@ -44,10 +43,9 @@ def load_parser(imzml: Path, ibd: Path):
         )
 
 
-def _convert(parser: pyimzml.ImzMLParser.ImzMLParser,
-             intensities: zarr.Array,
-             mzs: zarr.Array) -> None:
-    """main conversion function
+def _read_continuous_imzml(parser: pyimzml.ImzMLParser.ImzMLParser,
+                           intensities: zarr.Array, mzs: zarr.Array) -> None:
+    """main conversion function for continuous files
 
     Args:
         parser (pyimzml.ImzMLParser.ImzMLParser): initialized parser for the image
@@ -126,6 +124,55 @@ def _add_base_metadata(root: zarr.Group, name: str, source: str, uuid: str) -> N
     ]
 
 
+def _create_zarr_arrays(root: zarr.Group, shape: Tuple[int, int, int, int],
+                        intensity_dtype: np.dtype, mz_dtype: np.dtype
+                        ) -> Tuple[zarr.Array, zarr.Array]:
+    """create the arrays for the zarr Group
+
+    Args:
+        root (zarr.Group): group for the whole image
+        shape (Tuple[int]): (number of spectra, depth, height, width)
+        intensity_dtype (np.dtype): datatype for the intensities (e.g. 'f4', 'f8', etc.)
+        mz_dtype (np.dtype): datatype for the masses (e.g. 'f4', 'f8', etc.)
+
+    Returns:
+        - the intensity array
+        - the masses array
+        # TODO: the depth array
+    """
+
+    # array for the intensity values (main image)
+    intensities = root.zeros(
+        '0',
+        shape=shape,
+        dtype=intensity_dtype,
+        # default chunks & compressor (NOTE: subject to change)
+    )
+
+    # xarray zarr enconding
+    intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(root)
+
+    # array for the m/Z (as a label)
+    mzs = root.zeros(
+        'labels/mzs/0',
+        shape=(shape[0], 1, 1, 1),
+        dtype=mz_dtype,
+        # default chunks
+        compressor=None,
+    )
+
+    # NOTE: for now, z axis is supposed to be a Zero for all values
+    # array for z value (as a label)
+    # z_values = root.zeros(
+    #     'labels/z/0',
+    #     shape=(1, shape[1], 1, 1),
+    #     dtype=float,
+    #     compressor=None,
+    # )
+
+    return intensities, mzs
+
+
 def _get_xarray_axes(root: zarr.Group) -> List[str]:
     "return a copy of the 'axes' multiscales metadata, used for XArray"
     return root.attrs['multiscales'][0]['axes']
@@ -151,11 +198,6 @@ def convert_to_store(name: str, source_dir: Path, dest_store: zarr.DirectoryStor
 
     with load_parser(*pair) as parser:
 
-        shape = (parser.mzLengths[0],                        # c = m/Z
-                 1,                                          # z = 1
-                 parser.imzmldict['max count of pixels y'],  # y
-                 parser.imzmldict['max count of pixels x'])  # x
-
         # create OME-Zarr structure
         root = zarr.group(store=dest_store)
 
@@ -169,40 +211,20 @@ def convert_to_store(name: str, source_dir: Path, dest_store: zarr.DirectoryStor
         if is_continuous == is_processed:
             raise ValueError("invalid file mode, "
                              "expected one of 'continuous' or 'processed'")
-        
-        if is_processed:
-            raise NotImplementedError("TODO")
 
-        # array for the intensity values (main image)
-        intensities = root.zeros(
-            '0',
-            shape=shape,
-            dtype=parser.intensityPrecision,
-            # default chunks & compressor (NOTE: subject to change)
-        )
+        if is_continuous:
+            shape = (parser.mzLengths[0],                        # c = m/Z
+                     1,                                          # z = 1
+                     parser.imzmldict['max count of pixels y'],  # y
+                     parser.imzmldict['max count of pixels x'])  # x
 
-        # xarray zarr enconding
-        intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(root)
+            intensities, mzs = _create_zarr_arrays(
+                root, shape, parser.intensityPrecision, parser.mzPrecision)
 
-        # array for the m/Z (as a label)
-        mzs = root.zeros(
-            'labels/mzs/0',
-            shape=(shape[0], 1, 1, 1),
-            dtype=parser.mzPrecision,
-            # default chunks
-            compressor=None,
-        )
+            _read_continuous_imzml(parser, intensities, mzs)
 
-        # NOTE: for now, z axis is supposed to be a Zero for all values
-        # array for z value (as a label)
-        # z_values = root.zeros(
-        #     'labels/z/0',
-        #     shape=(1, shape[1], 1, 1),
-        #     dtype=float,
-        #     compressor=None,
-        # )
-
-        _convert(parser, intensities, mzs)
+        else:  # -> processed file
+            raise NotImplementedError("processed type ImzML files unsupported")
 
 
 class ImzMLToZarrConvertor(AbstractConvertor):
@@ -237,7 +259,8 @@ class ImzMLToZarrConvertor(AbstractConvertor):
                 # do conversion in dedicated function
                 convert_to_store(name, self.source.path, dest_store)
             except (ValueError, KeyError) as exception:
-                print(f'caught {exception=}')  # TODO use a proper logger and clean this up
+                # TODO use a proper logger and clean this up
+                print(f'caught {exception=}')
                 return False  # store is automatically removed by callback
 
             # remove callback to avoid file removal & indicate successful conversion
