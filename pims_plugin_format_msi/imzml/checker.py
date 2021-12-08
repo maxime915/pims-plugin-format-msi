@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import re
-
+from lxml.etree import iterparse
 from pims.files.file import Path
 from pims.formats.utils.abstract import CachedDataPath
 from pims.formats.utils.checker import AbstractChecker
 
 from .utils import get_imzml_pair
 
+MZML_PREFIX = '{http://psi.hupo.org/ms/mzml}'
 IMZML_UUID_ACCESSOR = 'IMS:1000080'
 
 
@@ -21,32 +21,46 @@ def check_uuid(imzml_path: Path, ibd_path: Path) -> bool:
         ibd_path (Path): path tot the ibd file
 
     Returns:
-        bool: the equivalence of the UUID
-
+        bool: true if the UUIDs match
     """
 
     try:
-        # get binary UUID
+        # get binary UUID as a lowercase hex
         with open(ibd_path, mode='rb') as ibd:
             ibd_uuid = ibd.read(16).hex()
 
-        # get imzML UUID
-        with open(imzml_path, mode='r', encoding='utf-8') as imzml:
-            for line in imzml:
-                # re.match caches pattern so no need to worry about compiling RE
-                if re.match(rf'.*{IMZML_UUID_ACCESSOR}.*', line):
+        # start parsing the document: get the root element
+        _, root = next(iterparse(str(imzml_path), events=['start']))
 
-                    # find UUID
-                    imzml_uuid_lst = re.findall(r'value="{?(.*)}?"', line)
-                    if len(imzml_uuid_lst) != 1:
-                        return False
+        # search for the UUID tagged accessor
+        key = f'.//{MZML_PREFIX}cvParam[@accession="{IMZML_UUID_ACCESSOR}"]'
+        element = root.find(key)
+        if element is None:
+            raise ValueError('unable to find UUID')
 
-                    # remove hyphens
-                    imzml_uuid = imzml_uuid_lst[0].replace('-', '')
+        # strip optional curly braces
+        imzml_uuid = element.get('value')
+        if imzml_uuid[0] == '{':
+            if imzml_uuid[-1] != '}':
+                raise ValueError('unable to parse UUID')
+            imzml_uuid = imzml_uuid[1:-1]
+
+        # remove hyphens & convert to lowercase
+        imzml_uuid = imzml_uuid.replace('-', '').lower()
 
         return imzml_uuid == ibd_uuid
 
-    except (Exception):  # TODO which exception could be thrown ?
+    except StopIteration:
+        # empty XML file
+        return False
+    except OSError:
+        # file not found
+        return False
+    except ValueError:
+        # parsing error
+        return False
+    except (Exception) as exception:  # TODO which exception could be thrown ?
+        print(f'{exception = }')
         return False
 
 
