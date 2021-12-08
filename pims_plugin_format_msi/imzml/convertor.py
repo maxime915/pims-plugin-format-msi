@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import abc
 import contextlib
 from typing import List, Tuple, Type
 
 import numpy as np
-import pyimzml.ImzMLParser
 import zarr
 from pims.files.file import Path
 from pims.formats import AbstractFormat
 from pims.formats.utils.convertor import AbstractConvertor
+from pyimzml.ImzMLParser import ImzMLParser as PyImzMLParser
 
+from ..__version__ import VERSION
 from ..utils.temp_store import single_temp_store
 from .utils import get_imzml_pair
 
-from ..__version__ import VERSION
-
+# byte size over which the whole structure is not copied
 _DISK_COPY_THRESHOLD = 8 * 10 ** 9
+
+SHAPE = Tuple[int, int, int, int]
 
 
 class PIMSOpenMicroscopyEnvironmentZarr(AbstractFormat):
@@ -36,146 +39,276 @@ def load_parser(imzml: Path, ibd: Path):
         Iterator[pyimzml.ImzMLParser.ImzMLParser]
     """
     with open(str(ibd), mode='rb') as ibd_file:
-        yield pyimzml.ImzMLParser.ImzMLParser(
+        yield PyImzMLParser(
             filename=str(imzml),
             parse_lib='lxml',
             ibd_file=ibd_file  # the ibd file has to be opened manually
         )
 
 
-def _read_continuous_imzml(parser: pyimzml.ImzMLParser.ImzMLParser,
-                           intensities: zarr.Array, mzs: zarr.Array) -> None:
-    """main conversion function for continuous files
-
-    Args:
-        parser (pyimzml.ImzMLParser.ImzMLParser): initialized parser for the image
-        intensities (zarr.Array): array of the right shape
-        mzs (zarr.Array): array of the right shape
-
-    NOTE: missing coordinates will not write to the array, make sure the default
-    value for the array is suitable
-    """
-
-    with single_temp_store() as fast_store:
-        # create an array for the temporary intensities
-        fast_intensities = zarr.group(fast_store).zeros(
-            '0',
-            shape=intensities.shape,
-            dtype=intensities.dtype,
-            chunks=(-1, 1, 1, 1),  # similar to the .ibd structure
-            compressor=None,
-        )
-
-        # fill m/Z into the destination group
-        parser.m.seek(parser.mzOffsets[0])
-        mzs[:, 0, 0, 0] = np.fromfile(parser.m, count=parser.mzLengths[0],
-                                      dtype=parser.mzPrecision)
-
-        # fill intensities into the fast group
-        for idx, (x, y, _) in enumerate(parser.coordinates):
-            parser.m.seek(parser.intensityOffsets[idx])
-            fast_intensities[:, 0, y-1, x-1] = np.fromfile(
-                parser.m, count=parser.intensityLengths[idx],
-                dtype=parser.intensityPrecision)
-
-        # re-chunk
-        array_size = fast_intensities.nbytes  # Zarr can be trusted here
-        if array_size <= _DISK_COPY_THRESHOLD:
-            # load all data in memory then write at once
-            #   - usually faster
-            intensities[:] = fast_intensities[:]
-        else:
-            # chunk by chunk loading
-            #   - smaller memory footprint
-            intensities[:] = fast_intensities
+def copy_array(source: zarr.Array, destination: zarr.Array) -> None:
+    "copy a array (ragged arrays non supported)"
+    array_size = source.nbytes  # Zarr can be trusted here
+    if array_size <= _DISK_COPY_THRESHOLD:
+        # load all data in memory then write at once
+        #   - usually faster
+        destination[:] = source[:]
+    else:
+        # chunk by chunk loading
+        #   - smaller memory footprint
+        destination[:] = source
 
 
-def _add_base_metadata(root: zarr.Group, name: str, source: str, uuid: str) -> None:
-    """add some OME-Zarr compliant metadata to the root group:
+class _BaseImzMLConvertor(abc.ABC):
+    "base class hiding the continuous VS processed difference behind polymorphism"
+
+    def __init__(self, root: zarr.Group, name: str, parser: PyImzMLParser) -> None:
+        super().__init__()
+
+        self.root = root
+        self.name = name
+        self.parser = parser
+
+    @abc.abstractmethod
+    def get_labels(self) -> List[str]:
+        "return the list of labels associated with the image"
+
+    def add_base_metadata(self) -> None:
+        """add some OME-Zarr compliant metadata to the root group:
         - multiscales
         - labels
 
-    as well as custom PIMS - MSI metadata in 'pims-msi'
-    """
+        as well as custom PIMS - MSI metadata in 'pims-msi'
+        """
 
-    # multiscales metadata
-    root.attrs['multiscales'] = [{
-        'version': '0.3',
-        'name': name,
-        # store intensities in dataset 0
-        'datasets': [{'path': '0'}, ],
-        # NOTE axes attribute may change significantly in 0.4.0
-        'axes': ['c', 'z', 'y', 'x'],
-        'type': 'none',  # no downscaling (at the moment)
-    }]
+        # multiscales metadata
+        self.root.attrs['multiscales'] = [{
+            'version': '0.3',
+            'name': self.name,
+            # store intensities in dataset 0
+            'datasets': [{'path': '0'}, ],
+            # NOTE axes attribute may change significantly in 0.4.0
+            'axes': ['c', 'z', 'y', 'x'],
+            'type': 'none',  # no downscaling (at the moment)
+        }]
 
-    root.attrs['pims-msi'] = {
-        'version': VERSION,
-        'source': source,
-        # image resolution ?
-        'uuid': uuid,
-        # find out if imzML come from a conversion, include it if so ?
-    }
+        self.root.attrs['pims-msi'] = {
+            'version': VERSION,
+            'source': self.parser.filename,
+            # image resolution ?
+            'uuid': self.parser.metadata.file_description.cv_params[0][2],
+            # find out if imzML come from a conversion, include it if so ?
+        }
 
-    # label group
-    root.create_group('labels').attrs['labels'] = [
-        'mzs/0',  # path to the m/Z values for this image
-        # 'mzs/z',  # path to the depth values for this image
-    ]
+        # label group
+        self.root.create_group('labels').attrs['labels'] = self.get_labels()
 
+    @abc.abstractmethod
+    def create_zarr_arrays(self):
+        """generate empty arrays inside the root group
+        """
 
-def _create_zarr_arrays(root: zarr.Group, shape: Tuple[int, int, int, int],
-                        intensity_dtype: np.dtype, mz_dtype: np.dtype
-                        ) -> Tuple[zarr.Array, zarr.Array]:
-    """create the arrays for the zarr Group
+    @abc.abstractmethod
+    def read_binary_data(self) -> None:
+        """fill in the arrays defined with the ibd file from the source
 
-    Args:
-        root (zarr.Group): group for the whole image
-        shape (Tuple[int]): (number of spectra, depth, height, width)
-        intensity_dtype (np.dtype): datatype for the intensities (e.g. 'f4', 'f8', etc.)
-        mz_dtype (np.dtype): datatype for the masses (e.g. 'f4', 'f8', etc.)
+        NOTE: missing coordinates will not write to the array, make sure the
+        current value for the array is suitable.
+        """
 
-    Returns:
-        - the intensity array
-        - the masses array
-        # TODO: the depth array
-    """
-
-    # array for the intensity values (main image)
-    intensities = root.zeros(
-        '0',
-        shape=shape,
-        dtype=intensity_dtype,
-        # default chunks & compressor (NOTE: subject to change)
-    )
-
-    # xarray zarr enconding
-    intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(root)
-
-    # array for the m/Z (as a label)
-    mzs = root.zeros(
-        'labels/mzs/0',
-        shape=(shape[0], 1, 1, 1),
-        dtype=mz_dtype,
-        # default chunks
-        compressor=None,
-    )
-
-    # NOTE: for now, z axis is supposed to be a Zero for all values
-    # array for z value (as a label)
-    # z_values = root.zeros(
-    #     'labels/z/0',
-    #     shape=(1, shape[1], 1, 1),
-    #     dtype=float,
-    #     compressor=None,
-    # )
-
-    return intensities, mzs
+    def run(self) -> None:
+        "main method"
+        self.add_base_metadata()
+        self.create_zarr_arrays()
+        self.read_binary_data()
 
 
-def _get_xarray_axes(root: zarr.Group) -> List[str]:
-    "return a copy of the 'axes' multiscales metadata, used for XArray"
-    return root.attrs['multiscales'][0]['axes']
+class _ContinuousImzMLConvertor(_BaseImzMLConvertor):
+    def get_labels(self) -> List[str]:
+        return ['mzs/0']
+
+    def get_intensity_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the intensity array"
+        return (
+            self.parser.mzLengths[0],                        # c = m/Z
+            1,                                               # z = 1
+            self.parser.imzmldict['max count of pixels y'],  # y
+            self.parser.imzmldict['max count of pixels x'],  # x
+        )
+
+    def get_mz_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the mzs array"
+        return (
+            self.parser.mzLengths[0],  # c = m/Z
+            1,                         # z
+            1,                         # y
+            1,                         # x
+        )
+
+    def create_zarr_arrays(self):
+        """generate empty arrays inside the root group
+        """
+
+        # array for the intensity values (main image)
+        intensities = self.root.zeros(
+            '0',
+            shape=self.get_intensity_shape(),
+            dtype=self.parser.intensityPrecision,
+            # default chunks & compressor
+        )
+
+        # xarray zarr encoding
+        intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(self.root)
+
+        # array for the m/Z (as a label)
+        self.root.zeros(
+            'labels/mzs/0',
+            shape=self.get_mz_shape(),
+            dtype=self.parser.mzPrecision,
+            # default chunks
+            compressor=None,
+        )
+
+        # # NOTE: for now, z axis is supposed to be a Zero for all values
+        # # array for z value (as a label)
+        # z_values = self.root.zeros(
+        #     'labels/z/0',
+        #     shape=self.get_z_shape(),
+        #     dtype=float,
+        #     compressor=None,
+        # )
+
+    def read_binary_data(self) -> None:
+        intensities = self.root[0]
+        mzs = self.root.labels.mzs[0]
+        with single_temp_store() as fast_store:
+            # create an array for the temporary intensities
+            fast_intensities = zarr.group(fast_store).zeros(
+                '0',
+                shape=intensities.shape,
+                dtype=intensities.dtype,
+                chunks=(-1, 1, 1, 1),  # similar to the .ibd structure
+                compressor=None,
+            )
+
+            # fill m/Z into the destination group
+            self.parser.m.seek(self.parser.mzOffsets[0])
+            mzs[:, 0, 0, 0] = np.fromfile(self.parser.m, count=self.parser.mzLengths[0],
+                                          dtype=self.parser.mzPrecision)
+
+            # fill intensities into the fast group
+            for idx, (x, y, _) in enumerate(self.parser.coordinates):
+                self.parser.m.seek(self.parser.intensityOffsets[idx])
+                fast_intensities[:, 0, y-1, x-1] = np.fromfile(
+                    self.parser.m, count=self.parser.intensityLengths[idx],
+                    dtype=self.parser.intensityPrecision)
+
+            # re-chunk
+            copy_array(fast_intensities, intensities)
+
+
+class _ProcessedImzMLConvertor(_BaseImzMLConvertor):
+    def get_labels(self) -> List[str]:
+        return ['mzs/0', 'lengths/0']
+
+    def get_intensity_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the intensity array"
+        return (
+            max(self.parser.mzLengths),                      # c = m/Z
+            1,                                               # z = 1
+            self.parser.imzmldict['max count of pixels y'],  # y
+            self.parser.imzmldict['max count of pixels x'],  # x
+        )
+
+    def get_mz_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the mzs array"
+        return self.get_intensity_shape()
+
+    def get_lengths_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the lengths array"
+        return (
+            1,                                               # c = m/Z
+            1,                                               # z = 1
+            self.parser.imzmldict['max count of pixels y'],  # y
+            self.parser.imzmldict['max count of pixels x'],  # x
+        )
+
+    def create_zarr_arrays(self):
+        """generate empty arrays inside the root group
+        """
+
+        # array for the intensity values (main image)
+        intensities = self.root.zeros(
+            '0',
+            shape=self.get_intensity_shape(),
+            dtype=self.parser.intensityPrecision,
+            # default chunks & compressor
+        )
+
+        # xarray zarr encoding
+        intensities.attrs['_ARRAY_DIMENSIONS'] = _get_xarray_axes(self.root)
+
+        # array for the m/Z (as a label)
+        self.root.zeros(
+            'labels/mzs/0',
+            shape=self.get_mz_shape(),
+            dtype=self.parser.mzPrecision,
+            # default chunks & compressor
+        )
+
+        # # NOTE: for now, z axis is supposed to be a Zero for all values
+        # # array for z value (as a label)
+        # z_values = self.root.zeros(
+        #     'labels/z/0',
+        #     shape=self.get_z_shape(),
+        #     dtype=float,
+        #     compressor=None,
+        # )
+
+        # array for the lengths (as a label)
+        self.root.zeros(
+            'labels/lengths/0',
+            shape=self.get_lengths_shape(),
+            dtype=np.uint32,
+            # default chunks
+            compressor=None,
+        )
+
+    def read_binary_data(self) -> None:
+        intensities = self.root[0]
+        mzs = self.root.labels.mzs[0]
+        lengths = self.root.labels.lengths[0]
+
+        with single_temp_store() as fast_store:
+            fast_group = zarr.group(fast_store)
+
+            # create arrays for the temporary intensities & masses
+            fast_intensities = fast_group.zeros(
+                '0',
+                shape=intensities.shape,
+                dtype=intensities.dtype,
+                chunks=(-1, 1, 1, 1),  # similar to the .ibd structure
+                compressor=None,
+            )
+            fast_mzs = fast_group.zeros(
+                'mzs',
+                shape=mzs.shape,
+                dtype=mzs.dtype,
+                chunks=(-1, 1, 1, 1),
+                compressor=None,
+            )
+
+            # read the data into the fast arrays
+            for idx, (x, y, _) in enumerate(self.parser.coordinates):
+                length = self.parser.mzLengths[idx]
+                lengths[0, 0, y-1, x-1] = length
+                spectra = self.parser.getspectrum(idx)
+                fast_mzs[:length, 0, y-1, x-1] = spectra[0]
+                fast_intensities[:length, 0, y-1, x-1] = spectra[1]
+
+            # re-chunk
+            copy_array(fast_intensities, intensities)
+            copy_array(fast_mzs, mzs)
 
 
 def convert_to_store(name: str, source_dir: Path, dest_store: zarr.DirectoryStore) -> None:
@@ -196,35 +329,29 @@ def convert_to_store(name: str, source_dir: Path, dest_store: zarr.DirectoryStor
     if pair is None:
         raise ValueError('not an imzML file')
 
+    # load the parser
     with load_parser(*pair) as parser:
-
-        # create OME-Zarr structure
-        root = zarr.group(store=dest_store)
-
-        _add_base_metadata(root, name=name, source=parser.filename,
-                           uuid=parser.metadata.file_description.cv_params[0][2])
 
         # check for binary mode
         is_continuous = 'continuous' in parser.metadata.file_description.param_by_name
         is_processed = 'processed' in parser.metadata.file_description.param_by_name
 
         if is_continuous == is_processed:
-            raise ValueError("invalid file mode, "
-                             "expected one of 'continuous' or 'processed'")
+            raise ValueError("invalid file mode, expected exactly one of "
+                             "'continuous' or 'processed'")
+
+        # create OME-Zarr structure
+        root = zarr.group(store=dest_store)
 
         if is_continuous:
-            shape = (parser.mzLengths[0],                        # c = m/Z
-                     1,                                          # z = 1
-                     parser.imzmldict['max count of pixels y'],  # y
-                     parser.imzmldict['max count of pixels x'])  # x
+            _ContinuousImzMLConvertor(root, name, parser).run()
+        else:
+            _ProcessedImzMLConvertor(root, name, parser).run()
 
-            intensities, mzs = _create_zarr_arrays(
-                root, shape, parser.intensityPrecision, parser.mzPrecision)
 
-            _read_continuous_imzml(parser, intensities, mzs)
-
-        else:  # -> processed file
-            raise NotImplementedError("processed type ImzML files unsupported")
+def _get_xarray_axes(root: zarr.Group) -> List[str]:
+    "return a copy of the 'axes' multiscales metadata, used for XArray"
+    return root.attrs['multiscales'][0]['axes']
 
 
 class ImzMLToZarrConvertor(AbstractConvertor):
