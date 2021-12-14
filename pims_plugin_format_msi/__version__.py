@@ -2,13 +2,12 @@
 
 VERSION = (0, 0, 1)
 
-# TODO fill-in
 __title__ = 'pims-plugin-format-msi'
 __description__ = 'ZarrImzML plugin for Mass Spectrometry Imaging'
 __plugin__ = 'MSI'
-__url__ = ''
+__url__ = 'https://doc.uliege.cytomine.org'
 __version__ = '.'.join(map(str, VERSION))
 __license__ = 'Apache 2.0'
-__copyright__ = ''
-__author__ = ''
-__email__ = ''
+__copyright__ = 'Copyright 2021-2022 ULiège Cytomine R&D team'
+__author__ = 'Maxime Amodei'
+__email__ = ''  # in discussion
