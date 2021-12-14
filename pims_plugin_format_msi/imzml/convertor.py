@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import contextlib
+import logging
 from typing import List, Tuple, Type
 
 import numpy as np
@@ -385,9 +386,12 @@ class ImzMLToZarrConvertor(AbstractConvertor):
             try:
                 # do conversion in dedicated function
                 convert_to_store(name, self.source.path, dest_store)
-            except (ValueError, KeyError) as exception:
-                # TODO use a proper logger and clean this up
-                print(f'caught {exception=}')
+            except (ValueError, KeyError) as error:
+                logging.error('conversion error', exc_info=error)
+                return False  # store is automatically removed by callback
+            except Exception as error:
+                # this should ideally never happen
+                logging.error('unexpected exception caught', exc_info=error)
                 return False  # store is automatically removed by callback
 
             # remove callback to avoid file removal & indicate successful conversion

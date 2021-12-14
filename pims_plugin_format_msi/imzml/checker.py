@@ -1,6 +1,7 @@
 "checker: detects ImzML file formats"
 
 from __future__ import annotations
+import logging
 
 from lxml.etree import iterparse
 from pims.files.file import Path
@@ -24,7 +25,7 @@ def check_uuid(imzml_path: Path, ibd_path: Path) -> bool:
         bool: true if the UUIDs match
     """
 
-    try:
+    try:        
         # get binary UUID as a lowercase hex
         with open(ibd_path, mode='rb') as ibd:
             ibd_uuid = ibd.read(16).hex()
@@ -59,8 +60,8 @@ def check_uuid(imzml_path: Path, ibd_path: Path) -> bool:
     except ValueError:
         # parsing error
         return False
-    except (Exception) as exception:  # TODO which exception could be thrown ?
-        print(f'{exception = }')
+    except Exception as error:
+        logging.error('unexpected exception caught', exc_info=error)
         return False
 
 
