@@ -2,27 +2,42 @@
 
 from __future__ import annotations
 
-from functools import cached_property
+import warnings
 
 import pyimzml.ImzMLParser
+from pims.formats.utils.abstract import AbstractFormat
 from pims.formats.utils.parser import AbstractParser
 from pims.formats.utils.structures.metadata import ImageMetadata, MetadataStore
 
 
+_REMOVE_WARNINGS = False
+
 class ImzMLParser(AbstractParser):
     "PIMS Parser for ImzML"
 
-    @cached_property
-    def raw_parser(self) -> pyimzml.ImzMLParser.ImzMLParser:
+    def __init__(self, format: AbstractFormat):
+        super().__init__(format)
+        self._parser = None
+
+    def get_parser(self) -> pyimzml.ImzMLParser.ImzMLParser:
         "returns the pyimzml.ImzMLParser.ImzMLParser corresponding to parsed file"
 
-        # warnings.filterwarnings('ignore', message=r'.*Accession IMS.*')
-        return pyimzml.ImzMLParser.ImzMLParser(
-            self.format.path,
-            parse_lib='lxml',  # only "safe" XML parsing library available
-            ibd_file=None,  # the parser doesn't need the ibd information (yet)
-            include_spectra_metadata=None,  # this could be useful but hard to tune
-        )
+        if self._parser is None:
+            # pyimzml generates a few warning about ontology on valid files
+
+            if _REMOVE_WARNINGS:
+                warnings.filterwarnings('ignore', message=r'.*Accession IMS.*')
+                warnings.filterwarnings('ignore', message=r'.*Accession MS.*')
+
+            self._parser = pyimzml.ImzMLParser.ImzMLParser(
+                self.format.path,
+                parse_lib='lxml',  # only "safe" XML parsing library available
+                # the parser doesn't need the ibd information (yet)
+                ibd_file=None,
+                include_spectra_metadata=None,  # this could be useful but hard to tune
+            )
+
+        return self._parser
 
     def parse_main_metadata(self) -> ImageMetadata:
         """
@@ -45,24 +60,30 @@ class ImzMLParser(AbstractParser):
             * suggested_name (can be None, used to infer color)
         """
 
-        # continuous = 'continuous' in self.raw_parser.metadata.file_description.param_by_name
-        processed = 'processed' in self.raw_parser.metadata.file_description.param_by_name
+        parser = self.get_parser()
 
-        if processed:
-            raise ValueError('ImzML file unsupported: only continuous mode is '
-                             'supported')
+        # check for binary mode
+        is_continuous = 'continuous' in parser.metadata.file_description.param_by_name
+        is_processed = 'processed' in parser.metadata.file_description.param_by_name
 
-        # TODO is self.format.main_imd defined when entering this function ?
+        if is_continuous == is_processed:
+            raise ValueError("invalid file mode, expected exactly one of "
+                             "'continuous' or 'processed'")
+
         metadata = self.format.main_imd
 
-        metadata.width = self.raw_parser.imzmldict['max count of pixels x']
-        metadata.height = self.raw_parser.imzmldict['max count of pixels y']
-        # NOTE this ignores 3D imzML files, but the interface is not finalized yet
+        metadata.width = parser.imzmldict['max count of pixels x']
+        metadata.height = parser.imzmldict['max count of pixels y']
+
         metadata.depth = 1
-        # TODO in non time-varying data, is duration 1 ?
+
+        if is_continuous:
+            metadata.n_channels = parser.mzLengths[0]
+        else:
+            metadata.n_channels = max(parser.mzLengths)
+
         metadata.duration = 1
-        # NOTE this assumes a continuous file
-        metadata.n_channels = self.raw_parser.mzLengths[0]
+
         # TODO what are the other metadata ?
 
         return metadata
