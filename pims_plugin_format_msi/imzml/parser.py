@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import warnings
+import numpy as np
 
 import pyimzml.ImzMLParser
 from pims.formats.utils.abstract import AbstractFormat
 from pims.formats.utils.parser import AbstractParser
-from pims.formats.utils.structures.metadata import ImageMetadata, MetadataStore
+from pims.formats.utils.structures.metadata import ImageChannel, ImageMetadata, MetadataStore
 
 
 _REMOVE_WARNINGS = False
@@ -70,21 +71,26 @@ class ImzMLParser(AbstractParser):
             raise ValueError("invalid file mode, expected exactly one of "
                              "'continuous' or 'processed'")
 
-        metadata = self.format.main_imd
+        metadata = ImageMetadata()
 
         metadata.width = parser.imzmldict['max count of pixels x']
         metadata.height = parser.imzmldict['max count of pixels y']
 
         metadata.depth = 1
+        metadata.duration = 1
 
         if is_continuous:
             metadata.n_channels = parser.mzLengths[0]
         else:
             metadata.n_channels = max(parser.mzLengths)
-
-        metadata.duration = 1
-
-        # TODO what are the other metadata ?
+        metadata.n_channels_per_read = metadata.n_channels
+        metadata.n_distinct_channels = metadata.n_channels
+        
+        metadata.pixel_type = np.dtype(parser.intensityPrecision)
+        metadata.significant_bits = metadata.pixel_type.itemsize
+        
+        for channel in range(metadata.n_channels):
+            metadata.set_channel(ImageChannel(channel))
 
         return metadata
 
