@@ -1,14 +1,18 @@
 "checker: detects ImzML file formats"
 
 from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from lxml.etree import iterparse
-from pims.files.file import Path
+
 from pims.formats.utils.abstract import CachedDataPath
 from pims.formats.utils.checker import AbstractChecker
-
 from .utils import get_imzml_pair
+
+if TYPE_CHECKING:
+    from pims.files.file import Path
 
 MZML_PREFIX = '{http://psi.hupo.org/ms/mzml}'
 IMZML_UUID_ACCESSOR = 'IMS:1000080'

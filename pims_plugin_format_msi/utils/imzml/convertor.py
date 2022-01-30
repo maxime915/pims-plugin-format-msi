@@ -5,18 +5,21 @@ from __future__ import annotations
 import abc
 import contextlib
 import logging
-from typing import List, Tuple, Type
+from typing import List, TYPE_CHECKING, Tuple, Type
 
 import numpy as np
 import zarr
-from pims.files.file import Path
-from pims.formats import AbstractFormat
-from pims.formats.utils.convertor import AbstractConvertor
 from pyimzml.ImzMLParser import ImzMLParser as PyImzMLParser
 
-from ..__version__ import VERSION
-from ..utils.temp_store import single_temp_store
+from pims.formats import AbstractFormat
+from pims.formats.common.zarr import ZarrFormat
+from pims.formats.utils.convertor import AbstractConvertor
+from pims_plugin_format_msi.__version__ import VERSION
+from pims_plugin_format_msi.utils.temp_store import single_temp_store
 from .utils import get_imzml_pair
+
+if TYPE_CHECKING:
+    from pims.files.file import Path
 
 # byte size over which the whole structure is not copied
 _DISK_COPY_THRESHOLD = 8 * 10 ** 9
@@ -24,8 +27,9 @@ _DISK_COPY_THRESHOLD = 8 * 10 ** 9
 SHAPE = Tuple[int, int, int, int]
 
 
-class PIMSOpenMicroscopyEnvironmentZarr(AbstractFormat):
-    "placeholder while PIMS lack the internal Zarr format"
+# class PIMSOpenMicroscopyEnvironmentZarr(AbstractFormat):
+#     "placeholder while PIMS lack the internal Zarr format"
+PIMSOpenMicroscopyEnvironmentZarr = ZarrFormat
 
 
 @contextlib.contextmanager

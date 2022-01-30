@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import warnings
-import numpy as np
 
+import numpy as np
 import pyimzml.ImzMLParser
+
 from pims.formats.utils.abstract import AbstractFormat
 from pims.formats.utils.parser import AbstractParser
 from pims.formats.utils.structures.metadata import ImageChannel, ImageMetadata, MetadataStore
-
+from pims_plugin_format_msi.utils.imzml.utils import get_imzml_pair
 
 _REMOVE_WARNINGS = False
 
@@ -30,8 +31,10 @@ class ImzMLParser(AbstractParser):
                 warnings.filterwarnings('ignore', message=r'.*Accession IMS.*')
                 warnings.filterwarnings('ignore', message=r'.*Accession MS.*')
 
+            imz_path, _ = get_imzml_pair(self.format.path)
+
             self._parser = pyimzml.ImzMLParser.ImzMLParser(
-                self.format.path,
+                str(imz_path),
                 parse_lib='lxml',  # only "safe" XML parsing library available
                 # the parser doesn't need the ibd information (yet)
                 ibd_file=None,
@@ -86,7 +89,7 @@ class ImzMLParser(AbstractParser):
         metadata.n_channels_per_read = metadata.n_channels
         metadata.n_distinct_channels = metadata.n_channels
         
-        metadata.pixel_type = np.dtype(parser.intensityPrecision)
+        metadata.pixel_type = np.dtype('uint16')  # np.dtype(parser.intensityPrecision)
         metadata.significant_bits = metadata.pixel_type.itemsize
         
         for channel in range(metadata.n_channels):
@@ -106,6 +109,18 @@ class ImzMLParser(AbstractParser):
         metadata = self.format.main_imd
 
         # TODO find documentation on which metadata can be used
+        # fill m/Z into the destination group
+        imz_path, ibd = get_imzml_pair(self.format.path)
+        with open(str(ibd), mode='rb') as ibd_file:
+            parser = pyimzml.ImzMLParser.ImzMLParser(
+                filename=str(imz_path),
+                parse_lib='lxml',
+                ibd_file=ibd_file  # the ibd file has to be opened manually
+            )
+            parser.m.seek(parser.mzOffsets[0])
+            mzs = np.fromfile(parser.m, count=parser.mzLengths[0], dtype=parser.mzPrecision)
+            for channel in range(metadata.n_channels):
+                metadata.channels[channel].suggested_name = f"{mzs[channel]:.5f}"
 
         metadata.is_complete = True
 

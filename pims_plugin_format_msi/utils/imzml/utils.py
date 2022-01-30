@@ -1,9 +1,11 @@
 "utils: utility function related to ImzML"
+from __future__ import annotations
 
-from typing import Optional, Tuple
 import warnings
+from typing import Optional, TYPE_CHECKING, Tuple
 
-from pims.files.file import Path
+if TYPE_CHECKING:
+    from pims.files.file import Path
 
 
 def get_imzml_pair(path: Path) -> Optional[Tuple[Path, Path]]:

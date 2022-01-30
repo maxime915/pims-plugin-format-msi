@@ -1,14 +1,28 @@
 "ImzML file format description"
 
+#  * Copyright (c) 2020-2021. Authors: see NOTICE file.
+#  *
+#  * Licensed under the Apache License, Version 2.0 (the "License");
+#  * you may not use this file except in compliance with the License.
+#  * You may obtain a copy of the License at
+#  *
+#  *      http://www.apache.org/licenses/LICENSE-2.0
+#  *
+#  * Unless required by applicable law or agreed to in writing, software
+#  * distributed under the License is distributed on an "AS IS" BASIS,
+#  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  * See the License for the specific language governing permissions and
+#  * limitations under the License.
+
 from __future__ import annotations
 
 from functools import cached_property
 
 from pims.formats import AbstractFormat
-
-from pims_plugin_format_msi.imzml.checker import ImzMLChecker
-from pims_plugin_format_msi.imzml.convertor import ImzMLToZarrConvertor
-from pims_plugin_format_msi.imzml.parser import ImzMLParser
+from pims_plugin_format_msi.utils.imzml.checker import ImzMLChecker
+from pims_plugin_format_msi.utils.imzml.convertor import ImzMLToZarrConvertor
+from pims_plugin_format_msi.utils.imzml.parser import ImzMLParser
+from pims_plugin_format_msi.utils.imzml.utils import get_imzml_pair
 
 
 class NotImplementedClass:
@@ -52,12 +66,12 @@ class ImzMLFormat(AbstractFormat):
     @classmethod
     def is_spatial(cls) -> str:
         # ImzML should be used for conversion only
-        return False
+        return True
 
     @classmethod
     def is_spectral(cls) -> str:
         # ImzML should be used for conversion only
-        return False
+        return False  # TODO
 
     @classmethod
     def get_remarks(cls) -> str:
@@ -77,3 +91,8 @@ class ImzMLFormat(AbstractFormat):
         Decision can be made based on the format metadata.
         """
         return True
+
+    @cached_property
+    def main_path(self):
+        imzml, _ = get_imzml_pair(self.path)
+        return imzml
