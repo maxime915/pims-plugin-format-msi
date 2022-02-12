@@ -20,7 +20,7 @@ from functools import cached_property
 
 from pims.formats import AbstractFormat
 from pims_plugin_format_msi.utils.imzml.checker import ImzMLChecker
-from pims_plugin_format_msi.utils.imzml.convertor import ImzMLToZarrConvertor
+from pims_plugin_format_msi.utils.imzml.convertor.frontend import ImzMLToZarrConvertor
 from pims_plugin_format_msi.utils.imzml.parser import ImzMLParser
 from pims_plugin_format_msi.utils.imzml.utils import get_imzml_pair
 

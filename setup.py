@@ -16,6 +16,7 @@ REQUIRED = [
     'lxml',
     'pyimzml',
     'numpy',
+    'pandas',
 ]
 
 DEPENDENCY_LINKS = []
