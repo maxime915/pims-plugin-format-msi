@@ -28,7 +28,7 @@ class ImzMLData(NamedTuple):
     mz_dtype: np.dtype
     int_dtype: np.dtype
 
-    pixel_count: Tuple[int, int, int]
+    pixel_count: Tuple[int, int, int]  # z, y, x
 
     is_continuous: bool
 
@@ -36,6 +36,11 @@ class ImzMLData(NamedTuple):
     source_ibd: Path
 
     uuid: str
+
+    scan_settings: Dict
+    softwares: Dict
+
+    dimensions: Tuple[float, float, float]  # z, y, x
 
 
 def get_data_from_parser(
@@ -87,6 +92,12 @@ def get_data_from_parser(
     spectra["y"] -= 1
     spectra["z"] -= 1
 
+    # most useful infos
+    scan_settings = {
+        k: v.param_by_name for k, v in parser.metadata.scan_settings.items()
+    }
+    softwares = {k: v.param_by_name for k, v in parser.metadata.softwares.items()}
+
     return ImzMLData(
         spectra=spectra,
         mz_dtype=np.dtype(parser.mzPrecision),
@@ -100,6 +111,13 @@ def get_data_from_parser(
         source_imzml=imzml,
         source_ibd=ibd,
         uuid=parser.metadata.file_description.cv_params[0][2],
+        scan_settings=scan_settings,
+        softwares=softwares,
+        dimensions=(
+            1.0,
+            parser.imzmldict["max dimension y"],
+            parser.imzmldict["max dimension x"],
+        ),
     )
 
 
@@ -270,18 +288,28 @@ class BaseImzMLConvertor(abc.ABC):
         for axis in ["z", "y", "x"]:
             axes.append(dict(name=axis, type="spatial"))
 
+        # 1.0 for C, 1.0/size for z, y, x
+        scale = [1.0]
+        for count, dimension in zip(self.data.pixel_count, self.data.dimensions):
+            scale.append(dimension / count)
+
         # multiscales metadata
         self.root.attrs["multiscales"] = [
             {
-                "version": "0.3",
+                "version": "0.4",
                 "name": self.name,
                 # store intensities in dataset 0
                 "datasets": [
-                    {"path": "0"},
+                    {
+                        "path": "0",
+                        "coordinateTransformations": [
+                            {"type": "scale", "scale": scale}
+                        ],
+                    }
                 ],
-                # NOTE axes attribute may change significantly in 0.4.0
-                "axes": ["c", "z", "y", "x"],
+                "axes": axes,
                 "type": "none",  # no downscaling (at the moment)
+                "metadata": {},
             }
         ]
 
@@ -292,6 +320,8 @@ class BaseImzMLConvertor(abc.ABC):
             "uuid": self.data.uuid,
             # find out if imzML come from a conversion, include it if so ?
             "binary_mode": ["processed", "continuous"][self.data.is_continuous],
+            "scan_settings": self.data.scan_settings,
+            "softwares": self.data.softwares,
         }
 
         # label group
@@ -638,7 +668,7 @@ def convert(
         except (ValueError, KeyError) as error:
             logging.error("conversion error", exc_info=error)
             return False  # store is automatically removed by callback
-        except Exception as error:
+        except Exception as error:  # pylint: disable=broad-except
             # this should ideally never happen
             logging.exception(error)
             return False  # store is automatically removed by callback

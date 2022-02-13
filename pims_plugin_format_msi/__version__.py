@@ -1,6 +1,6 @@
 'version: information about this package'
 
-VERSION = (0, 0, 1)
+VERSION = (0, 1, 0)
 
 __title__ = 'pims-plugin-format-msi'
 __description__ = 'ZarrImzML plugin for Mass Spectrometry Imaging'
