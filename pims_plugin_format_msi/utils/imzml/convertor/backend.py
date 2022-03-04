@@ -420,7 +420,7 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
     "convertor class for a continuous type file"
 
     def get_labels(self) -> List[str]:
-        return ["mzs/0"]
+        return ["mzs/0", "lengths/0"]
 
     @cached_property
     def intensity_shape(self) -> SHAPE:
@@ -441,6 +441,16 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
     def mz_chunks(self) -> SHAPE:
         int_chunks = self.intensity_chunks
         return int_chunks[:1] + (1, 1, 1)
+
+    @property
+    def lengths_shape(self) -> SHAPE:
+        "return an int tuple describing the shape of the lengths array"
+        return (1,) + self.data.pixel_count
+
+    @property
+    def lengths_chunks(self) -> SHAPE:
+        "return an int tuple describing the chunks of the lengths array"
+        return (1,) + self.intensity_chunks[1:]
 
     def create_zarr_arrays(self):
         """generate empty arrays inside the root group"""
@@ -477,10 +487,23 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
         #     compressor=None,
         # )
 
+        # array for the lengths (as a label)
+        self.root.zeros(
+            "labels/lengths/0",
+            shape=self.lengths_shape,
+            dtype=np.uint32,
+            chunks=self.lengths_chunks,
+            compressor=None,
+            order=self.order,
+        )
+
     def read_binary_data(self) -> None:
 
         intensities = self.root[0]
         mzs = self.root.labels.mzs[0]
+
+        zarr_lengths = self.root.labels.lengths[0]
+        lengths = np.zeros(zarr_lengths.shape, dtype=zarr_lengths.dtype)
 
         flat_to_idx = add_chunk_idx(
             intensities.shape[1:], intensities.chunks[1:], self.data.spectra
@@ -499,6 +522,11 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
                 per_chunk_idx = flat_to_idx[chunk_idx]
                 spectra = self.data.spectra
                 spectra = spectra[spectra.chunk_idx == chunk_idx]
+
+                # read lengths into a numpy array as buffer
+                for row in self.data.spectra.itertuples():
+                    lengths[0, row.z, row.y, row.x] = row.length
+
                 read_chunk_into(
                     array=intensities,
                     file=ibd_file,
@@ -506,6 +534,9 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
                     chunk_idx=per_chunk_idx,
                     offset_idx=spectra.columns.get_loc("int_offset") + 1,
                 )
+
+        # write to disk at once
+        zarr_lengths[:] = lengths
 
 
 class ProcessedImzMLConvertor(BaseImzMLConvertor):
@@ -586,6 +617,7 @@ class ProcessedImzMLConvertor(BaseImzMLConvertor):
         )
 
     def read_binary_data(self) -> None:
+
         intensities = self.root[0]
         mzs = self.root.labels.mzs[0]
 
@@ -599,16 +631,14 @@ class ProcessedImzMLConvertor(BaseImzMLConvertor):
 
         with open(self.data.source_ibd, mode="rb") as ibd_file:
 
-            # read lengths into a numpy array as buffer
-            for row in self.data.spectra.itertuples():
-                lengths[0, row.z, row.y, row.x] = row.length
-            # write to disk at once
-            zarr_lengths[:] = lengths
-
             for chunk_idx in chunk_lst:
                 per_chunk_idx = flat_to_idx[chunk_idx]
                 spectra = self.data.spectra
                 spectra = spectra[spectra.chunk_idx == chunk_idx]
+
+                # read lengths into a numpy array as buffer
+                for row in self.data.spectra.itertuples():
+                    lengths[0, row.z, row.y, row.x] = row.length
 
                 # read mzs
                 read_chunk_into(
@@ -627,6 +657,9 @@ class ProcessedImzMLConvertor(BaseImzMLConvertor):
                     chunk_idx=per_chunk_idx,
                     offset_idx=spectra.columns.get_loc("int_offset") + 1,
                 )
+
+        # write to disk at once
+        zarr_lengths[:] = lengths
 
 
 def _get_xarray_axes(root: zarr.Group) -> List[str]:
