@@ -162,8 +162,6 @@ def add_chunk_idx(
     # flatten using stride
     flat_idx = sum(idx * stride for idx, stride in zip(per_chunk_idx, strides))
 
-    flat_to_idx = dict(zip(flat_idx, zip(*per_chunk_idx)))
-
     flat_to_idx = {}
     for flat, *per_chunk in zip(flat_idx, *per_chunk_idx):
         flat_to_idx[flat] = per_chunk
@@ -368,7 +366,7 @@ class BaseImzMLConvertor(abc.ABC):
                 chunks[i] = c[0]
             chunks[i] = int(chunks[i])
 
-        last_idx = 1
+        last_idx = 0  # right after m/Z: only shrink spatial chunks
         while True:
             # data is read in full band chunks
             temp_chunk_size = shape[0] * np.prod(chunks[1:]) * item_size
@@ -377,7 +375,7 @@ class BaseImzMLConvertor(abc.ABC):
                 break
 
             # while too much, decrease the chunks shape in x, y, z
-            idx = min(1, (last_idx + 1) % len(chunks))
+            idx = max(1, (last_idx + 1) % len(chunks))
             while idx < len(chunks):
                 if chunks[idx] == 1:
                     idx += 1
