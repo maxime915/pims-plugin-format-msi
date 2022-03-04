@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import zarr
 from pyimzml.ImzMLParser import ImzMLParser as PyImzMLParser
-from zarr.util import normalize_chunks
+from zarr.util import normalize_chunks as zarr_auto_chunk
 
 from pims_plugin_format_msi.__version__ import VERSION
 
@@ -343,7 +343,30 @@ class BaseImzMLConvertor(abc.ABC):
 
         shape = self.intensity_shape
 
-        chunks = list(normalize_chunks(self.chunks, shape, item_size))
+        if self.chunks is True:
+            self.chunks = "zarr-auto"
+
+        if isinstance(self.chunks, str):
+            if self.chunks == "zarr-auto":
+                chunks = list(zarr_auto_chunk(True, shape, item_size))
+            else:
+                raise ValueError(
+                    (
+                        "unrecognized str argument for chunks"
+                        "only 'zarr-auto' is supported"
+                    )
+                )
+
+        elif not isinstance(self.chunks, (tuple, list)):
+            raise ValueError(f"invalid value received as chunk: {self.chunks}")
+
+        else:
+            chunks = list(self.chunks)
+
+        for i, c in enumerate(chunks):
+            if isinstance(c, tuple):
+                chunks[i] = c[0]
+            chunks[i] = int(chunks[i])
 
         last_idx = 1
         while True:
