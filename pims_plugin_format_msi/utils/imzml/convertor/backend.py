@@ -110,7 +110,7 @@ def get_data_from_parser(
         is_continuous=is_continuous,
         source_imzml=imzml,
         source_ibd=ibd,
-        uuid=parser.metadata.file_description.cv_params[0][2],
+        uuid=parser.metadata.file_description.param_by_name["universally unique identifier"],
         scan_settings=scan_settings,
         softwares=softwares,
         dimensions=(
