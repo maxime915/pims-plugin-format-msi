@@ -95,6 +95,34 @@ def get_parser(
         ),
     )
 
+    parser.add_argument(
+        "--ignore-accession-warnings",
+        type=bool,
+        default=False,
+        help="remove pyImzML's warnings about incorrect accession",
+    )
+
+    parser.add_argument(
+        "--auto-crop",
+        type=bool,
+        default=False,
+        help="remove padding (pixels with no spectra) before conversion",
+    )
+
+    parser.add_argument(
+        "--trim-long-outliers",
+        type=bool,
+        default=False,
+        help="remove spectra which have a length longer than p50 + icr-f * (p75 - p25)",
+    )
+
+    parser.add_argument(
+        "--trim-long-outliers-icf-f",
+        type=bool,
+        default=False,
+        help="inter quartile factor, see --trim-long-outliers (ignored if --trim-long-outliers is False)",
+    )
+
     if add_benchmark:
         parser.add_argument("--benchmark", action="store_true", help="time conversion")
 

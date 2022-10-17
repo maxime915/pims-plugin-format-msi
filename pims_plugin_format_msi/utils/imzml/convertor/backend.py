@@ -28,7 +28,7 @@ class ImzMLData(NamedTuple):
     mz_dtype: np.dtype
     int_dtype: np.dtype
 
-    pixel_count: Tuple[int, int, int]  # z, y, x
+    pixel_shape: Tuple[int, int, int]  # z, y, x
 
     is_continuous: bool
 
@@ -40,11 +40,17 @@ class ImzMLData(NamedTuple):
     scan_settings: Dict
     softwares: Dict
 
-    dimensions: Tuple[float, float, float]  # z, y, x
+    physical_shape: Tuple[float, float, float]  # z, y, x
 
 
 def get_data_from_parser(
-    imzml: Path, ibd: Path, ignore_warnings: bool = False
+    imzml: Path,
+    ibd: Path,
+    ignore_accession_warnings: bool = False,
+    *,
+    auto_crop: bool = False,
+    trim_long_outliers: bool = False,
+    trim_long_outliers_icr_f: float = 3.0,
 ) -> ImzMLData:
     """parse an imzml / ibd file pair to an ImzMLData object
 
@@ -68,7 +74,7 @@ def get_data_from_parser(
         on invalid file mode
     """
 
-    if ignore_warnings:
+    if ignore_accession_warnings:
         warnings.filterwarnings("ignore", r"Accession I?MS")
 
     parser = PyImzMLParser(str(imzml), parse_lib="lxml", ibd_file=None)
@@ -82,15 +88,14 @@ def get_data_from_parser(
             "invalid file mode, expected exactly one of " "'continuous' or 'processed'"
         )
 
-    spectra = pd.DataFrame(parser.coordinates, columns=["x", "y", "z"])
+    xyz_columns = ["x", "y", "z"]
+    spectra = pd.DataFrame(parser.coordinates, columns=xyz_columns)
     spectra = spectra.assign(mz_offset=parser.mzOffsets)
     spectra = spectra.assign(int_offset=parser.intensityOffsets)
     spectra = spectra.assign(length=parser.mzLengths)
 
     # offset coordinates for 0-based indexing
-    spectra["x"] -= 1
-    spectra["y"] -= 1
-    spectra["z"] -= 1
+    spectra[xyz_columns] -= 1
 
     # most useful infos
     scan_settings = {
@@ -98,26 +103,61 @@ def get_data_from_parser(
     }
     softwares = {k: v.param_by_name for k, v in parser.metadata.softwares.items()}
 
+    pixel_shape = [
+        1,
+        parser.imzmldict["max count of pixels y"],
+        parser.imzmldict["max count of pixels x"],
+    ]
+
+    try:
+        physical_shape = [
+            1.0,
+            parser.imzmldict["max dimension y"],
+            parser.imzmldict["max dimension x"],
+        ]
+    except KeyError:
+        physical_shape = pixel_shape[:]  # copy
+
+    ## auto crop
+    if auto_crop:
+        yx_low = [spectra.y.min(), spectra.x.min()]
+        yx_high = [spectra.y.max() + 1, spectra.x.max() + 1]
+
+        res_per_axis = [phys / pix for (phys, pix) in zip(physical_shape, pixel_shape)]
+
+        new_pixel_shape = [1] + [hi - lo for (lo, hi) in zip(yx_low, yx_high)]
+        dropped_pix_size = [o - n for (o, n) in zip(pixel_shape, new_pixel_shape)]
+        pixel_shape = new_pixel_shape
+
+        physical_shape = [
+            phys - res * drop
+            for (phys, res, drop) in zip(physical_shape, res_per_axis, dropped_pix_size)
+        ]
+
+        spectra.y -= yx_low[0]
+        spectra.x -= yx_low[1]
+
+    ## trim outliers
+    if trim_long_outliers:
+        p25, p50, p75 = np.percentile(spectra.length, (25, 50, 75))
+        bound = p50 + trim_long_outliers_icr_f * (p75 - p25)
+
+        spectra.drop(spectra[spectra.length > bound].index, inplace=True)
+
     return ImzMLData(
         spectra=spectra,
         mz_dtype=np.dtype(parser.mzPrecision),
         int_dtype=np.dtype(parser.intensityPrecision),
-        pixel_count=(
-            1,
-            parser.imzmldict["max count of pixels y"],
-            parser.imzmldict["max count of pixels x"],
-        ),
+        pixel_shape=tuple(pixel_shape),
         is_continuous=is_continuous,
         source_imzml=imzml,
         source_ibd=ibd,
-        uuid=parser.metadata.file_description.param_by_name["universally unique identifier"],
+        uuid=parser.metadata.file_description.param_by_name[
+            "universally unique identifier"
+        ],
         scan_settings=scan_settings,
         softwares=softwares,
-        dimensions=(
-            1.0,
-            parser.imzmldict["max dimension y"],
-            parser.imzmldict["max dimension x"],
-        ),
+        physical_shape=tuple(physical_shape),
     )
 
 
@@ -292,7 +332,7 @@ class BaseImzMLConvertor(abc.ABC):
 
         # 1.0 for C, 1.0/size for z, y, x
         scale = [1.0]
-        for count, dimension in zip(self.data.pixel_count, self.data.dimensions):
+        for count, dimension in zip(self.data.pixel_shape, self.data.physical_shape):
             scale.append(dimension / count)
 
         # multiscales metadata
@@ -310,7 +350,7 @@ class BaseImzMLConvertor(abc.ABC):
                     }
                 ],
                 "axes": axes,
-                "type": "none",  # no downscaling (at the moment)
+                "type": "none",  # no down-scaling (at the moment)
                 "metadata": {},
             }
         ]
@@ -332,7 +372,7 @@ class BaseImzMLConvertor(abc.ABC):
     @property
     @abc.abstractmethod
     def intensity_shape(self) -> SHAPE:
-        "return an int tuple describint the array shape"
+        "return an int tuple describing the array shape"
 
     @cached_property
     def intensity_chunks(self) -> SHAPE:
@@ -430,7 +470,7 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
     def intensity_shape(self) -> SHAPE:
         "return an int tuple describing the shape of the intensity array"
         # c=m/Z, z=1, y, x
-        return (self.data.spectra.loc[0, "length"],) + self.data.pixel_count
+        return (self.data.spectra.loc[0, "length"],) + self.data.pixel_shape
 
     @cached_property
     def mz_shape(self) -> SHAPE:
@@ -449,7 +489,7 @@ class ContinuousImzMLConvertor(BaseImzMLConvertor):
     @property
     def lengths_shape(self) -> SHAPE:
         "return an int tuple describing the shape of the lengths array"
-        return (1,) + self.data.pixel_count
+        return (1,) + self.data.pixel_shape
 
     @property
     def lengths_chunks(self) -> SHAPE:
@@ -553,7 +593,7 @@ class ProcessedImzMLConvertor(BaseImzMLConvertor):
     def intensity_shape(self) -> SHAPE:
         "return an int tuple describing the shape of the intensity array"
         max_length = self.data.spectra.length.max()
-        return (max_length,) + self.data.pixel_count
+        return (max_length,) + self.data.pixel_shape
 
     # no need to override intensity_chunks
 
@@ -568,7 +608,7 @@ class ProcessedImzMLConvertor(BaseImzMLConvertor):
     @property
     def lengths_shape(self) -> SHAPE:
         "return an int tuple describing the shape of the lengths array"
-        return (1,) + self.data.pixel_count
+        return (1,) + self.data.pixel_shape
 
     @property
     def lengths_chunks(self) -> SHAPE:
@@ -677,6 +717,11 @@ def convert(
     zarr_path: Path,
     /,
     name: Optional[str] = None,
+    *,
+    ignore_accession_warnings: bool = False,
+    auto_crop: bool = True,
+    trim_long_outliers: bool = True,
+    trim_long_outliers_icr_f: float = 3.0,
     **kwargs,
 ) -> bool:
     """convert: standalone conversion function
@@ -716,7 +761,14 @@ def convert(
         stack.callback(dest_store.rmdir)
 
         try:
-            mz_data = get_data_from_parser(imzml, ibd)
+            mz_data = get_data_from_parser(
+                imzml,
+                ibd,
+                ignore_accession_warnings=ignore_accession_warnings,
+                auto_crop=auto_crop,
+                trim_long_outliers=trim_long_outliers,
+                trim_long_outliers_icr_f=trim_long_outliers_icr_f,
+            )
 
             if mz_data.is_continuous:
                 ContinuousImzMLConvertor(root, name, mz_data, **kwargs).run()
