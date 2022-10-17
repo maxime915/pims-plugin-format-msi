@@ -208,13 +208,6 @@ def read_chunk_into(
         min(shape[2], (chunk_idx[2] + 1) * chunk_width[2]),
     )
 
-    chunk_slice = (
-        slice(None),
-        slice(low_idx[0], high_idx[0]),
-        slice(low_idx[1], high_idx[1]),
-        slice(low_idx[2], high_idx[2]),
-    )
-
     buffer = np.zeros(
         order=array.order,
         shape=(
@@ -227,6 +220,7 @@ def read_chunk_into(
     )
 
     # read the chunk into a buffer
+    max_length = 0
     for row in spectra.itertuples():
         length = row.length
         file.seek(row[offset_idx])
@@ -238,8 +232,18 @@ def read_chunk_into(
         )
         buffer[idx] = np.fromfile(file, count=length, dtype=array.dtype)
 
+        if length > max_length:
+            max_length = length
+
+    chunk_slice = (
+        slice(0, max_length),
+        slice(low_idx[0], high_idx[0]),
+        slice(low_idx[1], high_idx[1]),
+        slice(low_idx[2], high_idx[2]),
+    )
+
     # write to zarr (disk)
-    array[chunk_slice] = buffer
+    array[chunk_slice] = buffer[:max_length, ...]
 
 
 class BaseImzMLConvertor(abc.ABC):
