@@ -117,7 +117,7 @@ def get_parser(
     )
 
     parser.add_argument(
-        "--trim-long-outliers-icf-f",
+        "--trim-long-outliers-icr-f",
         type=bool,
         default=False,
         help="inter quartile factor, see --trim-long-outliers (ignored if --trim-long-outliers is False)",
